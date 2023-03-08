@@ -1,0 +1,8 @@
+/target
+sing-box-test-config.json
+sing-box
+sing-box.exe
+outbound-template.json
+rtt_result*
+.idea
+/test

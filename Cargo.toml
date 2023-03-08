@@ -1,0 +1,27 @@
+[package]
+name = "cdn-ip-tester"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[profile.release]
+codegen-units = 1
+strip = true
+opt-level = "z"  # Optimize for size.
+lto = true
+panic = "abort"
+
+
+[dependencies]
+serde_json = "1.0"
+reqwest = { version = "0.11", features = ["json", "socks", "rustls-tls"], default-features = false}
+tokio = { version = "1", features = ["full"] }
+toml = "0.7"
+log = "0.4"
+pretty_env_logger = "0.4"
+serde = {version = "1.0", features = ["derive"]}
+anyhow = "1.0"
+regex = "1.7"
+lazy_static = "1.4"
+indicatif = "0.17"
