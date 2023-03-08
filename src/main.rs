@@ -397,9 +397,10 @@ async fn main() -> Result<()> {
         }
 
         let sing_box_config = sing_box_template.generate(&outbound_template, &ips, config.listen_ip.clone(), config.port_base);
+        fs::write(SING_BOX_CONFIG_FILE_NAME, serde_json::to_string_pretty(&sing_box_config)?)?;
+
         let sing_box = SingBox::new(SING_BOX_CONFIG_FILE_NAME).await?;
 
-        fs::write(SING_BOX_CONFIG_FILE_NAME, serde_json::to_string_pretty(&sing_box_config)?)?;
         let mut tasks = Vec::new();
 
         for i in 0..ips.len() {
