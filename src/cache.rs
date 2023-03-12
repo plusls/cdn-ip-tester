@@ -70,7 +70,7 @@ impl RttResults {
     fn from_string_list(s: &Vec<String>) -> Result<Self> {
         lazy_static! {
             static ref RE_RTT_RESULT_MATCH: Regex =
-                Regex::new(r"^ip: (.?), server_rtt: (\d+), cdn_rtt: (\d+)$").unwrap();
+                Regex::new(r"^ip: (.+), server_rtt: (\d+), cdn_rtt: (\d+)$").unwrap();
         }
         let mut ret = Self::default();
 
@@ -81,8 +81,8 @@ impl RttResults {
                 ret.res.insert(
                     ip_addr,
                     RttResult::new(
-                        u64::from_str(&res[1]).map_err(DeserializedError::from)?,
                         u64::from_str(&res[2]).map_err(DeserializedError::from)?,
+                        u64::from_str(&res[3]).map_err(DeserializedError::from)?,
                     ),
                 );
                 ret.sorted_res_keys.push(ip_addr);
