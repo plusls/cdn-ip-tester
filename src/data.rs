@@ -77,7 +77,7 @@ impl FromStr for Subnet {
 
 impl Subnet {
     pub fn len(&self) -> usize {
-        (1 << (self.0.family().len() - self.0.network_length())).min(256)
+        1 << (self.0.family().len() - self.0.network_length())
     }
 
     pub fn get_ip(&self, idx: usize) -> Option<IpAddr> {
@@ -93,48 +93,3 @@ impl Subnet {
         }
     }
 }
-
-// impl Subnet {
-//     fn from_str(s: &str) -> Result<Self> {
-//
-//     }
-//
-//     fn get_ip_str(ip: u32) -> String {
-//         format!(
-//             "{}.{}.{}.{}",
-//             ip >> 24,
-//             (ip >> 16) & 0xff,
-//             (ip >> 8) & 0xff,
-//             ip & 0xff
-//         )
-//     }
-//
-//     fn get_ip_list(&self, start: usize, count: usize) -> Vec<String> {
-//         let mut ret = Vec::new();
-//         for i in start..start + count {
-//             if i >= self.count {
-//                 break;
-//             }
-//             ret.push(Self::get_ip_str(self.start + (i as u32)));
-//         }
-//         ret
-//     }
-//     fn from_file<P: AsRef<Path>>(path: P) -> Result<Vec<Self>> {
-//         let ip_segments_str = fs::read_to_string(&path).context(format!(
-//             "unable to load ip segments from {:?}",
-//             path.as_ref()
-//         ))?;
-//         ip_segments_str
-//             .split('\n')
-//             .map(|s| s.replace('\r', "").replace(' ', ""))
-//             .filter_map(|s| {
-//                 if s.is_empty() {
-//                     None
-//                 } else {
-//                     Some(Self::from_str(s.as_str()))
-//                 }
-//             })
-//             .collect()
-//     }
-// }
-//

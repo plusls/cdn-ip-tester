@@ -31,8 +31,8 @@ const CONFIG_FILE_NAME: &str = "ip-tester.toml";
 const OUTBOUND_TEMPLATE_FILE_NAME: &str = "outbound-template.json";
 const SING_BOX_TEMPLATE_FILE_NAME: &str = "sing-box-template.json";
 const SING_BOX_CONFIG_FILE_NAME: &str = "sing-box-test-config.json";
-const RTT_RESULT_FILE_NAME: &str = "_result.txt";
-const RTT_RESULT_CACHE_FILE_NAME: &str = "_result_cache.toml";
+const RTT_RESULT_FILE_NAME: &str = "result.txt";
+const RTT_RESULT_CACHE_FILE_NAME: &str = "result_cache.toml";
 
 async fn do_test_rtt(
     client: Client,
@@ -159,6 +159,7 @@ async fn test_rtts(
     config: &Arc<Config>,
     sing_box_template: &SingBoxConfig,
     outbound_template: &Outbound,
+    data_dir: &str,
     ignore_body_warning: bool,
     progress_bar: &ProgressBar,
     ips: &[IpAddr],
@@ -170,9 +171,10 @@ async fn test_rtts(
         config.port_base,
     );
 
-    sing_box_config.save(SING_BOX_CONFIG_FILE_NAME)?;
+    let sing_box_config_path = format!("{data_dir}/{SING_BOX_CONFIG_FILE_NAME}");
+    sing_box_config.save(&sing_box_config_path)?;
 
-    let sing_box = SingBox::new(SING_BOX_CONFIG_FILE_NAME).await?;
+    let sing_box = SingBox::new(&sing_box_config_path).await?;
 
     let mut tasks = Vec::new();
     let mut ret = Vec::new();
@@ -221,8 +223,8 @@ struct Args {
     subnet_count: usize,
     #[arg(long)]
     no_cache: bool,
-    #[arg(long, default_value = "rtt")]
-    output_prefix: String,
+    #[arg(long, default_value = "data")]
+    data_dir: String,
 }
 
 #[tokio::main]
@@ -232,45 +234,68 @@ async fn main() -> Result<()> {
         .filter_level(LevelFilter::Info)
         .init();
 
-    let config: Arc<Config> = match Config::load(CONFIG_FILE_NAME) {
+    let config_path = format!("{}/{CONFIG_FILE_NAME}", args.data_dir);
+    let config: Arc<Config> = match Config::load(&config_path) {
         Ok(config) => Arc::new(config),
         Err(err) => {
-            if let ErrorKind::Fs { .. } = *err.0 {
-                info!("Unable to load config from {CONFIG_FILE_NAME}, create new config.");
-                let config = Arc::new(Config::default());
-                config.save(CONFIG_FILE_NAME)?;
-                config
-            } else {
-                return Err(err);
-            }
+            info!("Unable to load config from {config_path}\n{err}");
+            return Err(err);
         }
     };
 
-    let outbound_template = Outbound::load(OUTBOUND_TEMPLATE_FILE_NAME)?;
+    let outbound_template_path = format!("{}/{OUTBOUND_TEMPLATE_FILE_NAME}", args.data_dir);
+    let outbound_template = match Outbound::load(&outbound_template_path) {
+        Ok(outbound) => outbound,
+        Err(err) => {
+            info!("Unable to load outbound template from {outbound_template_path}\n{err}");
+            return Err(err);
+        }
+    };
 
-    let subnets: Vec<Subnet> = Vec::load(args.ip_file.clone())?;
+    let subnets: Vec<Subnet> = match Vec::load(&args.ip_file) {
+        Ok(subnets) => subnets,
+        Err(err) => {
+            info!("Unable to load subnets from {}\n{err}", &args.ip_file);
+            return Err(err);
+        }
+    };
+
     let subnets = if args.subnet_count != 0 {
         &subnets[..args.subnet_count]
     } else {
         &subnets
     };
 
-    let max_subnet_count = subnets.iter().fold(0_usize, |max_subnet_count, subnet| {
-        max_subnet_count.max(subnet.len())
-    });
+    let max_subnet_len = subnets
+        .iter()
+        .fold(0_usize, |max_subnet_len, subnet| {
+            max_subnet_len.max(subnet.len())
+        })
+        .min(config.max_subnet_len);
+
     info!(
-        "Load {} subnets from {:?} success. max_subnet_count: {}",
+        "Load {} subnets from {:?} success. max_subnet_len: {}",
         subnets.len(),
         args.ip_file,
-        max_subnet_count
+        max_subnet_len
     );
 
-    let sing_box_template = SingBoxConfig::load(SING_BOX_TEMPLATE_FILE_NAME)?;
+    let sing_box_template_path = format!("{}/{SING_BOX_TEMPLATE_FILE_NAME}", args.data_dir);
+    let sing_box_template = match SingBoxConfig::load(&sing_box_template_path) {
+        Ok(sing_box_template) => sing_box_template,
+        Err(err) => {
+            info!(
+                "Unable to load sing box template from {}\n{err}",
+                &sing_box_template_path
+            );
+            return Err(err);
+        }
+    };
 
     let mut rtt_results;
     let mut rtt_result_cache;
-    let rtt_result_file_name = args.output_prefix.clone() + RTT_RESULT_FILE_NAME;
-    let rtt_result_cache_file_name = args.output_prefix.clone() + RTT_RESULT_CACHE_FILE_NAME;
+    let rtt_result_file_name = format!("{}/{RTT_RESULT_FILE_NAME}", args.data_dir);
+    let rtt_result_cache_file_name = format!("{}/{RTT_RESULT_CACHE_FILE_NAME}", args.data_dir);
 
     if args.no_cache {
         info!("no_cache = true, use default rtt result cache and default rtt result");
@@ -302,8 +327,8 @@ async fn main() -> Result<()> {
                     Err(DeserializedError::custom(format!( "Can not load rtt result cache. current_subnet: {}, but subnets.len(): {}", rtt_result_cache.current_subnet, subnets.len()).as_str()))?;
                 }
 
-                if rtt_result_cache.current_subnet_start >= max_subnet_count {
-                    Err(DeserializedError::custom(format!( "Can not load rtt result cache. current_subnet_start: {}, but max_subnet_count: {}", rtt_result_cache.current_subnet_start, max_subnet_count).as_str()))?;
+                if rtt_result_cache.current_subnet_start >= max_subnet_len {
+                    Err(DeserializedError::custom(format!( "Can not load rtt result cache. current_subnet_start: {}, but max_subnet_len: {}", rtt_result_cache.current_subnet_start, max_subnet_len).as_str()))?;
                 }
                 info!("Load rtt result cache success: {rtt_result_cache:?}");
                 rtt_result_cache
@@ -314,7 +339,7 @@ async fn main() -> Result<()> {
                     info!("Can not load rtt result cache. Create new rtt result cache.");
                     RttResultCache::default()
                 } else {
-                    info!("Can not load rtt result cache: {err}");
+                    error!("Can not load rtt result cache cache: {err}");
                     return Err(err);
                 }
             }
@@ -344,7 +369,7 @@ async fn main() -> Result<()> {
     progress_bar.set_position(start_ip_count as u64);
     progress_bar.reset_eta();
 
-    while rtt_result_cache.current_subnet_start < max_subnet_count {
+    while rtt_result_cache.current_subnet_start < max_subnet_len {
         let mut ips: Vec<IpAddr> = Vec::new();
         while ips.len() < config.max_connection_count {
             if let Some(ip_addr) = subnets[rtt_result_cache.current_subnet]
@@ -357,7 +382,7 @@ async fn main() -> Result<()> {
             if rtt_result_cache.current_subnet == subnets.len() {
                 rtt_result_cache.current_subnet = 0;
                 rtt_result_cache.current_subnet_start += 1;
-                if rtt_result_cache.current_subnet_start == max_subnet_count {
+                if rtt_result_cache.current_subnet_start == max_subnet_len {
                     break;
                 }
             }
@@ -367,6 +392,7 @@ async fn main() -> Result<()> {
             &config,
             &sing_box_template,
             &outbound_template,
+            args.data_dir.as_str(),
             args.ignore_body_warning,
             &progress_bar,
             &ips,

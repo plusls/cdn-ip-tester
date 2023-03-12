@@ -1,0 +1,9 @@
+port_base = 31000
+max_connection_count = 50
+server_url = "http://127.0.0.1/"
+cdn_url = "http://archlinux.cloudflaremirrors.com"
+listen_ip = "127.0.0.2"
+max_rtt = 1000
+server_res_body = ""
+cdn_res_body = "archlinux"
+max_subnet_len = 256

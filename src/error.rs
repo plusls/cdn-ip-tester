@@ -85,7 +85,7 @@ pub enum TokioError {
 
 #[derive(ThisError, Debug)]
 pub enum ErrorKind {
-    #[error("IO error when processing file {path:?}\nCause: {source}\nBacktrace: {backtrace}")]
+    #[error("IO error when processing file {path}\nCause: {source}\nBacktrace: {backtrace}")]
     Fs {
         source: std::io::Error,
         path: String,
