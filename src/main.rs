@@ -134,7 +134,7 @@ impl SingBox {
                 .await
                 .map_err(ErrorKind::process)?;
             let stderr_output_str = String::from_utf8(stderr_output.clone()).unwrap();
-            error!("{read_stdout_err:?}\noutput: \n{stderr_output_str}");
+            error!("{read_stdout_err}\noutput: \n{stderr_output_str}");
             Err(ErrorKind::process(read_stdout_err))?
         }
         Ok(Self { child })
@@ -146,7 +146,7 @@ impl Drop for SingBox {
         tokio::task::block_in_place(move || {
             Handle::current().block_on(async {
                 if let Err(err) = self.child.kill().await {
-                    error!("self.child.kill failed: {err:?}");
+                    error!("self.child.kill failed: {err}");
                 } else {
                     debug!("child kill!");
                 }
@@ -196,7 +196,7 @@ async fn test_rtts(
                     if let Some(ReqwestError::BodyNoMatch { .. }) =
                         err.source().unwrap().downcast_ref()
                     {
-                        warn!("{:?}", err);
+                        warn!("ip: {} body unmatched: \n{}", ips[i], err);
                     }
                 }
 
@@ -290,7 +290,7 @@ async fn main() -> Result<()> {
                     info!("Can not load rtt result. Create new rtt result.");
                     RttResults::default()
                 } else {
-                    info!("Can not load rtt result: {err:?}");
+                    error!("Can not load rtt result: {err}");
                     return Err(err);
                 }
             }
@@ -314,14 +314,14 @@ async fn main() -> Result<()> {
                     info!("Can not load rtt result cache. Create new rtt result cache.");
                     RttResultCache::default()
                 } else {
-                    info!("Can not load rtt result cache: {err:?}");
+                    info!("Can not load rtt result cache: {err}");
                     return Err(err);
                 }
             }
         }
     }
-    rtt_result_cache.save(&rtt_result_file_name)?;
-    rtt_results.save(&rtt_result_cache_file_name)?;
+    rtt_results.save(&rtt_result_file_name)?;
+    rtt_result_cache.save(&rtt_result_cache_file_name)?;
 
     let all_ip_count = subnets.iter().fold(0, |acc, subnet| acc + subnet.len());
     let start_ip_count = subnets.iter().fold(0, |acc, subnet| {

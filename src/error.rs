@@ -18,7 +18,7 @@ pub enum SerializedError {
 pub enum DeserializedError {
     Toml(#[from] toml::de::Error),
     Json(#[from] serde_json::error::Error),
-    #[error("{unmatched:?} unmatched regex: {regex}")]
+    #[error("{unmatched:?} unmatched regex: \"{regex}\"")]
     Regex {
         unmatched: String,
         regex: String,
@@ -48,7 +48,7 @@ pub enum ReqwestError {
     Build { source: reqwest::Error },
     #[error("Reqwest network error, source: {source}")]
     Network { source: reqwest::Error },
-    #[error("Expected body {expected} not found in {body}")]
+    #[error("Expected body {expected:?} not found in {body:?}")]
     BodyNoMatch { body: String, expected: String },
 }
 
@@ -85,24 +85,24 @@ pub enum TokioError {
 
 #[derive(ThisError, Debug)]
 pub enum ErrorKind {
-    #[error("IO error when processing file {path:?}\nCause: {source}\nBacktrace: {backtrace:?}")]
+    #[error("IO error when processing file {path:?}\nCause: {source}\nBacktrace: {backtrace}")]
     Fs {
         source: std::io::Error,
         path: String,
         backtrace: Backtrace,
     },
-    #[error("Process IO error\nCause: {source}\nBacktrace: {backtrace:?}")]
+    #[error("Process IO error\nCause: {source}\nBacktrace: {backtrace}")]
     Process {
         source: std::io::Error,
         backtrace: Backtrace,
     },
-    #[error("Serialized error\nCause: {0}\nbBacktrace: {1:?}")]
+    #[error("Serialized error\nCause: {0}\nBacktrace: {1}")]
     Serialized(#[from] SerializedError, Backtrace),
-    #[error("Deserialized error\nCause: {0}\nbBacktrace: {1:?}")]
+    #[error("Deserialized error\nCause: {0}\nBacktrace: {1}")]
     Deserialized(#[from] DeserializedError, Backtrace),
-    #[error("ReqwestError error\nCause: {0}\nbBacktrace: {1:?}")]
+    #[error("ReqwestError error\nCause: {0}\nBacktrace: {1}")]
     Reqwest(#[from] ReqwestError, Backtrace),
-    #[error("JoinError error\nCause: {0}\nbBacktrace: {1:?}")]
+    #[error("JoinError error\nCause: {0}\nBacktrace: {1}")]
     Tokio(#[from] TokioError, Backtrace),
 }
 
