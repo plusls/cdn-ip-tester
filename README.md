@@ -2,7 +2,6 @@
 
 查找适合自己当前网络环境的优选 CDN Anycast IP
 
-
 ## 使用申明
 
 本项目侧重于研究任播技术中丢包率与网速的相互关系，仅供学习使用
@@ -52,7 +51,8 @@ cdn-ip-tester 测试的是 **本机->cf->服务器** 的延迟
 
 ## 原理
 
-根据提供的 cdn 网段，自动生成 sing-box 的配置文件，形成多个 socks5 的代理，随后自动使用 socks5 代理访问 `http://{domain}{path}` 并将返回结果与 `{body}` 进行比较，同时计算总时间记为 rtt
+根据提供的 cdn 网段，自动生成 sing-box 的配置文件，形成多个 socks5 的代理，随后自动使用 socks5
+代理访问 `http://{domain}{path}` 并将返回结果与 `{body}` 进行比较，同时计算总时间记为 rtt
 
 ![原理图](./img/struct.png)
 
@@ -60,39 +60,68 @@ cdn-ip-tester 测试的是 **本机->cf->服务器** 的延迟
 
 ### sing-box-template.json
 
-sing-box 的模板，cdn-ip-tester 会自动以该文件为模板，向 `inbounds`，`outbounds` 与 `rules` 中添加配置后生成 `sing-box-test-config.json`
+sing-box 的模板，cdn-ip-tester 会自动以该文件为模板，向 `inbounds`，`outbounds` 与 `rules`
+中添加配置后生成 `sing-box-test-config.json`
 
 ### outbound-template.json
 
-sing-box outbound 的模板， cdn-ip-tester 会自动为其添加 `tag` 和 `server` 后合并进 sing-box template，`outbound-template-template.json` 为 trojan+ws+0rtt 的配置样例
-
-### ip-v4.txt
-
-CDN 所有的 ip 网段，仓库中的 ip 为 cloudflare 的 ip 网段
+sing-box outbound 的模板， cdn-ip-tester 会自动为其添加 `tag` 和 `server` 后合并进 sing-box
+template，`outbound-template-template.json` 为 trojan+ws+0rtt 的配置样例
 
 ### ip-tester.toml
 
-cdn-ip-tester 的配置文件
+cdn-ip-tester 的配置文件，首次运行时会自动生成
 
 ```toml
 port_base = 31000 # 本机监听的最小端口值
 max_connection_count = 50 # 同时测试的最大连接数
-domain = "127.0.0.1" # 远程 url
-path = "/" # 远程 path
+server_url = "http://127.0.0.1/" # 远程 url
+cdn_url = "http://archlinux.cloudflaremirrors.com" # cdn url
 listen_ip = "127.0.0.2" # 绑定的本机 ip
 max_rtt = 800 # 最大延迟，超时后的结果会被自动丢弃
-body = "f**k you" # http://{domain}{path} 的返回结果
+server_res_body = "" # {server_url} 的返回结果需要包含 {server_res_body}, 为空则表示忽略返回结果检查
+cdn_res_body = "" # {server_url} 的返回结果需要包含 {cdn_res_body}，为空则表示忽略返回结果检查
 ```
 
 ## 缓存文件
 
-### rtt_result.txt
+### {output_prefix}_result.txt
 
 其中存储了延迟测试的结果，如果该文件存在每次运行时都会自动加载其中的数据
 
-### rtt_result_cache.toml
+### {output_prefix}_result_cache.toml
 
 其中存储了延迟测试的进度，如果该文件存在每次运行时都会自动加载其中的数据
+
+## 元数据
+
+### ip-v4.txt
+
+cloudflare 的 ipv4 网段
+
+### ip-v6.txt
+
+cloudflare 的 ipv6 网段
+
+## 测试顺序
+
+按子网顺序依次测试，每个子网轮流测试一个，然后循环到第一个子网，每个子网最多选取 256 个 IP，若是子网的 IP 数大于 256，则随机选取
+256 个 IP
+
+## 使用方式
+
++ 克隆本仓库，并编译出可执行文件（或下载对应的 release）
++ 根据 `outbound-template-template.json` 编写自己的 `outbound-template.json`
++ 修改 `ip-tester.toml` 以适配自己的服务器
++ 运行 cdn-ip-tester
+
+## 命令行参数
+
++ `--ignore-body-warning` 忽略 body 不匹配的警告信息
++ `--ip-file` 输入的 ip 列表
++ `--subnet-count` 测试前 `subnet_count` 个子网，默认为 0，表示测试所有子网
++ `--no-cache` 忽略 cache 开始新的测试
++ `--output-prefix` 默认为 `rtt`
 
 ## 引用声明
 

@@ -1,167 +1,107 @@
-use std::{fs, io};
-use std::mem::replace;
-use std::path::Path;
+#![feature(error_generic_member_access)]
+#![feature(provide_any)]
+
+use std::error::Error;
+use std::net::{IpAddr, SocketAddr};
 use std::process::Stdio;
-use std::str::FromStr;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use anyhow::{anyhow, Context, Result};
+use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
-use lazy_static::lazy_static;
-use log::{debug, error, info, LevelFilter};
-use regex::Regex;
-use serde::{Deserialize, Serialize};
+use log::{debug, error, info, warn, LevelFilter};
+use reqwest::{Client, Url};
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 use tokio::runtime::Handle;
 
-use crate::template::Template as _;
+use crate::cache::{RttResult, RttResultCache, RttResults};
+use crate::config::Config;
+use crate::data::{Loadable, Savable, Subnet};
+use crate::error::{DeserializedError, ErrorKind, ReqwestError, Result, TokioError};
+use crate::template::{Outbound, SingBoxConfig};
 
+mod cache;
+mod config;
+mod data;
+mod error;
 mod template;
 
 const CONFIG_FILE_NAME: &str = "ip-tester.toml";
-const IP_FILE_NAME: &str = "ip-v4.txt";
 const OUTBOUND_TEMPLATE_FILE_NAME: &str = "outbound-template.json";
 const SING_BOX_TEMPLATE_FILE_NAME: &str = "sing-box-template.json";
 const SING_BOX_CONFIG_FILE_NAME: &str = "sing-box-test-config.json";
-const RTT_RESULT_FILE_NAME: &str = "rtt_result.txt";
-const RTT_RESULT_CACHE_FILE_NAME: &str = "rtt_result_cache.toml";
+const RTT_RESULT_FILE_NAME: &str = "_result.txt";
+const RTT_RESULT_CACHE_FILE_NAME: &str = "_result_cache.toml";
 
-
-#[derive(Serialize, Deserialize, Clone)]
-struct Config {
-    port_base: u16,
-    max_connection_count: usize,
-    domain: String,
-    path: String,
-    listen_ip: String,
-    max_rtt: u64,
-    body: String,
-}
-
-impl Config {
-    fn from_str(s: &str) -> Result<Self> {
-        Ok(toml::from_str(s)?)
-    }
-    fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let config_str = fs::read_to_string(&path).context(format!("unable to load config from {:?}", path.as_ref()))?;
-        Self::from_str(config_str.as_str()).context(format!("unable to parse config from {:?}", path.as_ref()))
-    }
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            port_base: 31000,
-            max_connection_count: 200,
-            domain: "127.0.0.1".into(),
-            path: "/".into(),
-            listen_ip: "127.0.0.2".into(),
-            max_rtt: 1000,
-            body: "rtt tester".into(),
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Default)]
-struct RttResultCache {
-    current_subnet: usize,
-    current_subnet_start: usize,
-}
-
-
-impl RttResultCache {
-    fn from_str(s: &str) -> Result<Self> {
-        Ok(toml::from_str(s)?)
-    }
-    fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let rtt_result_cache_str = fs::read_to_string(&path).context(format!("unable to load rtt result cache from {:?}", path.as_ref()))?;
-        Self::from_str(rtt_result_cache_str.as_str()).context(format!("unable to parse rtt result cache from {:?}", path.as_ref()))
-    }
-}
-
-
-#[derive(Debug)]
-struct Subnet {
-    start: u32,
-    count: usize,
-}
-
-impl Subnet {
-    fn from_str(s: &str) -> Result<Self> {
-        lazy_static! {
-            static ref RE_IP_CHECK: Regex = Regex::new(r"^((25[0-5]|(2[0-4]|1\d|[1-9]|)\d)\.?\b){4}/(3[0-2]|[1-2]\d|\d)$").unwrap();
-            static ref RE_IP_MATCH: Regex = Regex::new(r"(\d+).(\d+).(\d+).(\d+)/(\d+)$").unwrap();
-        }
-        if !RE_IP_CHECK.is_match(s) {
-            return Err(anyhow!("invalid sub_net: {s}"));
-        }
-        let cap = RE_IP_MATCH.captures(s).unwrap();
-        let mut ip_array = [0; 4];
-        for (i, it) in ip_array.iter_mut().rev().enumerate() {
-            *it = u8::from_str(&cap[i + 1])?
-        }
-        let subnet_length = 32 - usize::from_str(&cap[5])?;
-        let mut ret = Self {
-            start: ip_array.iter().enumerate()
-                .fold(0_u32, |acc, (i, &x)| acc + ((x as u32) << (8 * i))),
-            count: 1 << subnet_length,
-        };
-
-        let mask = (1_u32 << subnet_length) - 1;
-        if ret.start & mask == 0 {
-            if mask != 0 {
-                ret.start += 1;
-                ret.count -= 2;
-            }
-        } else {
-            // info!("{} {}", (ret.start & mask) as usize, ret.count);
-            ret.count -= (ret.start & mask) as usize;
-            if ret.count > 0 {
-                ret.count -= 1;
-            }
-        }
-        Ok(ret)
-    }
-
-    fn get_ip_str(ip: u32) -> String {
-        format!("{}.{}.{}.{}", ip >> 24, (ip >> 16) & 0xff, (ip >> 8) & 0xff, ip & 0xff)
-    }
-
-    fn get_ip_list(&self, start: usize, count: usize) -> Vec<String> {
-        let mut ret = Vec::new();
-        for i in start..start + count {
-            if i >= self.count {
-                break;
-            }
-            ret.push(Self::get_ip_str(self.start + (i as u32)));
-        }
-        ret
-    }
-    fn from_file<P: AsRef<Path>>(path: P) -> Result<Vec<Self>> {
-        let ip_segments_str = fs::read_to_string(&path).context(format!("unable to load ip segments from {:?}", path.as_ref()))?;
-        ip_segments_str.split('\n').map(|s| s.replace('\r', "").replace(' ', ""))
-            .filter_map(|s| if s.is_empty() { None } else { Some(Self::from_str(s.as_str())) }).collect()
-    }
-}
-
-async fn test_rtt(config: &Config, idx: usize) -> Result<u64> {
-    let url = format!("http://{}{}", config.domain, config.path);
-    let client = reqwest::Client::builder()
-        .proxy(reqwest::Proxy::all(format!("socks5://{}:{}", config.listen_ip, config.port_base + idx as u16))?)
-        .timeout(Duration::from_millis(config.max_rtt))
-        .build()?;
+async fn do_test_rtt(
+    client: Client,
+    url: Url,
+    expected_body: String,
+) -> core::result::Result<u64, ReqwestError> {
     let start = SystemTime::now();
-    let body = client.get(url).send()
-        .await?
+    let body = client
+        .get(url)
+        .send()
+        .await
+        .map_err(ReqwestError::network)?
         .text()
-        .await?;
-    let rtt = SystemTime::now().duration_since(start)?.as_millis() as u64;
-    if body == config.body {
-        Ok(rtt)
-    } else {
-        Err(anyhow!("expected body: {:?}, current body: {body:?}", config.body))
+        .await
+        .map_err(ReqwestError::network)?;
+    if !body.contains(expected_body.as_str()) {
+        Err(ReqwestError::body_no_match(body, expected_body))?
     }
+    Ok(SystemTime::now().duration_since(start).unwrap().as_millis() as u64)
+}
+
+async fn test_rtt(config: Arc<Config>, cdn_ip: IpAddr, idx: usize) -> Result<RttResult> {
+    let server_client = Client::builder()
+        .proxy(
+            reqwest::Proxy::all(format!(
+                "socks5://{}:{}",
+                config.listen_ip,
+                config.port_base + idx as u16
+            ))
+            .map_err(ReqwestError::build)?,
+        )
+        .timeout(Duration::from_millis(config.max_rtt))
+        .build()
+        .map_err(ReqwestError::build)?;
+
+    let server_url = Url::parse(config.server_url.as_str()).map_err(DeserializedError::from)?;
+    let cdn_url = Url::parse(config.cdn_url.as_str()).map_err(DeserializedError::from)?;
+    let cdn_domain = if let Some(cdn_domain) = cdn_url.domain() {
+        cdn_domain
+    } else {
+        Err(DeserializedError::custom("Url must have domain, not IP"))?
+    };
+    if cdn_url.scheme() != "http" && cdn_url.scheme() != "https" {
+        Err(DeserializedError::custom(
+            "Url scheme must be http or https",
+        ))?
+    }
+    let cdn_url_port = if let Some(cdn_url_port) = cdn_url.port_or_known_default() {
+        cdn_url_port
+    } else {
+        unreachable!()
+    };
+
+    let cdn_client = Client::builder()
+        .resolve_to_addrs(cdn_domain, &[SocketAddr::new(cdn_ip, cdn_url_port)])
+        .timeout(Duration::from_millis(config.max_rtt))
+        .build()
+        .map_err(ReqwestError::build)?;
+
+    let cdn_expected_body = config.cdn_res_body.clone();
+    let cdn_rtt_task = tokio::task::spawn(do_test_rtt(cdn_client, cdn_url, cdn_expected_body));
+    let server_expected_body = config.server_res_body.clone();
+    let server_rtt_task =
+        tokio::task::spawn(do_test_rtt(server_client, server_url, server_expected_body));
+
+    let cdn_rtt_result = cdn_rtt_task.await.map_err(TokioError::from)?;
+    let server_rtt_result = server_rtt_task.await.map_err(TokioError::from)?;
+
+    Ok(RttResult::new(cdn_rtt_result?, server_rtt_result?))
 }
 
 struct SingBox {
@@ -174,19 +114,30 @@ impl SingBox {
             .args(["run", "-c", config_file_name])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn().context("Failed to start sing box process")?;
+            .spawn()
+            .map_err(ErrorKind::process)?;
         let mut tmp_buf = [0_u8];
-        if let Err(read_stdout_err) = child.stdout.as_mut().unwrap().read_exact(&mut tmp_buf).await.context("Sing box process read_exact stdout failed.") {
-            let status = child.wait().await.context("Sing box process wait failed.")?;
+        if let Err(read_stdout_err) = child
+            .stdout
+            .as_mut()
+            .unwrap()
+            .read_exact(&mut tmp_buf)
+            .await
+        {
+            child.wait().await.map_err(ErrorKind::process)?;
             let mut stderr_output = Vec::new();
-            child.stderr.as_mut().unwrap().read_to_end(&mut stderr_output).await.context("Sing box process read_to_end stderr failed.")?;
-            let stderr_output_str = String::from_utf8(stderr_output.clone())?;
-            error!("{read_stdout_err:?}\noutput: \n{stderr_output_str}");
-            return Err(read_stdout_err.context(format!("Sing box process exited. status: {status:?}")));
-        }
-        Ok(Self {
             child
-        })
+                .stderr
+                .as_mut()
+                .unwrap()
+                .read_to_end(&mut stderr_output)
+                .await
+                .map_err(ErrorKind::process)?;
+            let stderr_output_str = String::from_utf8(stderr_output.clone()).unwrap();
+            error!("{read_stdout_err:?}\noutput: \n{stderr_output_str}");
+            Err(ErrorKind::process(read_stdout_err))?
+        }
+        Ok(Self { child })
     }
 }
 
@@ -204,112 +155,90 @@ impl Drop for SingBox {
     }
 }
 
-#[derive(Debug)]
-struct RttResult {
-    res: Vec<(u64, String)>,
-    buf: Vec<(u64, String)>,
+async fn test_rtts(
+    config: &Arc<Config>,
+    sing_box_template: &SingBoxConfig,
+    outbound_template: &Outbound,
+    ignore_body_warning: bool,
+    progress_bar: &ProgressBar,
+    ips: &[IpAddr],
+) -> Result<Vec<Option<RttResult>>> {
+    let sing_box_config = sing_box_template.generate(
+        outbound_template,
+        &ips.iter().map(IpAddr::to_string).collect::<Vec<String>>(),
+        config.listen_ip.clone(),
+        config.port_base,
+    );
+
+    sing_box_config.save(SING_BOX_CONFIG_FILE_NAME)?;
+
+    let sing_box = SingBox::new(SING_BOX_CONFIG_FILE_NAME).await?;
+
+    let mut tasks = Vec::new();
+    let mut ret = Vec::new();
+    for (i, &cdn_ip) in ips.iter().enumerate() {
+        let config = config.clone();
+        tasks.push(tokio::task::spawn(test_rtt(config, cdn_ip, i)));
+    }
+
+    for (i, task) in tasks.iter_mut().enumerate() {
+        let res = task.await.map_err(TokioError::from)?;
+
+        match res {
+            Ok(rtt) => {
+                let log_str = format!("ip: {}, rtt: {:?}", ips[i], rtt);
+                progress_bar.println(log_str.as_str());
+                debug!("{log_str}");
+                ret.push(Some(rtt));
+            }
+            Err(err) => {
+                if !ignore_body_warning {
+                    if let Some(ReqwestError::BodyNoMatch { .. }) =
+                        err.source().unwrap().downcast_ref()
+                    {
+                        warn!("{:?}", err);
+                    }
+                }
+
+                // warn!("ip:{}, err:{:?}", ips[i], err);
+
+                ret.push(None);
+            }
+        }
+    }
+    drop(sing_box);
+    Ok(ret)
 }
 
-impl RttResult {
-    fn new() -> Self {
-        Self {
-            res: Vec::new(),
-            buf: Vec::new(),
-        }
-    }
-
-    fn add_result(&mut self, ip: String, rtt: u64) {
-        self.buf.push((rtt, ip));
-    }
-
-    fn from_string_list(s: &Vec<String>) -> Result<Self> {
-        lazy_static! {
-            static ref RE_RTT_RESULT_MATCH: Regex = Regex::new(r"^ip: (((25[0-5]|(2[0-4]|1\d|[1-9]|)\d)\.?\b){4}),rtt: (\d+)$").unwrap();
-        }
-        let mut ret = Self::new();
-
-        for line in s {
-            let res = RE_RTT_RESULT_MATCH.captures(line);
-            if let Some(res) = res {
-                ret.res.push((u64::from_str(&res[5]).unwrap(), res[1].into()));
-            } else {
-                return Err(anyhow!("match failed: {line:?}"));
-            }
-        }
-        Ok(ret)
-    }
-    fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let rtt_results_str = fs::read_to_string(&path).context(format!("unable to load rtt result from {:?}", path.as_ref()))?;
-        let rtt_results_str_array = rtt_results_str.split('\n')
-            .map(|s| s.replace('\r', ""))
-            .filter_map(|s| if s.is_empty() { None } else { Some(s) })
-            .collect();
-        Self::from_string_list(&rtt_results_str_array)
-    }
-
-    fn dump(&mut self) -> String {
-        let mut new_res = Vec::new();
-        let mut i = 0_usize;
-        let mut j = 0_usize;
-        self.buf.sort();
-
-        let mut res_data = self.res.get_mut(i).map(|x| replace(x, Default::default()));
-        let mut buf_data = self.buf.get_mut(j).map(|x| replace(x, Default::default()));
-        while i < self.res.len() || j < self.buf.len() {
-            if buf_data.is_none() {
-                new_res.push(res_data.unwrap());
-                i += 1;
-                res_data = self.res.get_mut(i).map(std::mem::take);
-                continue;
-            }
-
-            if res_data.is_none() {
-                new_res.push(buf_data.unwrap());
-                j += 1;
-                buf_data = self.buf.get_mut(j).map(std::mem::take);
-                continue;
-            }
-
-            if res_data.as_ref().unwrap().0 < buf_data.as_ref().unwrap().0 {
-                new_res.push(res_data.unwrap());
-                i += 1;
-                res_data = self.res.get_mut(i).map(std::mem::take);
-            } else {
-                new_res.push(buf_data.unwrap());
-                j += 1;
-                buf_data = self.buf.get_mut(j).map(std::mem::take);
-            }
-        }
-
-
-        self.res = new_res;
-        self.buf.clear();
-        let mut ret = String::new();
-
-        for (rtt, ip) in &self.res {
-            ret.push_str(format!("ip: {ip},rtt: {rtt}\n").as_str());
-        }
-        ret
-    }
-
-    fn dump_to_file<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        let output = self.dump();
-        fs::write(path, &output)?;
-        Ok(())
-    }
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    #[arg(long)]
+    ignore_body_warning: bool,
+    #[arg(long)]
+    ip_file: String,
+    #[arg(long, default_value_t = 0)]
+    subnet_count: usize,
+    #[arg(long)]
+    no_cache: bool,
+    #[arg(long, default_value = "rtt")]
+    output_prefix: String,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    pretty_env_logger::formatted_builder().filter_level(LevelFilter::Info).init();
+    let args = Args::parse();
+    pretty_env_logger::formatted_builder()
+        .filter_level(LevelFilter::Info)
+        .init();
 
-    let config: Config = match Config::from_file(CONFIG_FILE_NAME) {
-        Ok(config) => config,
+    let config: Arc<Config> = match Config::load(CONFIG_FILE_NAME) {
+        Ok(config) => Arc::new(config),
         Err(err) => {
-            if let Some(io::Error { .. }) = err.downcast_ref() {
+            if let ErrorKind::Fs { .. } = *err.0 {
                 info!("Unable to load config from {CONFIG_FILE_NAME}, create new config.");
-                let config = Config::default();
-                fs::write(CONFIG_FILE_NAME, toml::to_string(&config)?).context(format!("unable to save config to {CONFIG_FILE_NAME:?}"))?;
+                let config = Arc::new(Config::default());
+                config.save(CONFIG_FILE_NAME)?;
                 config
             } else {
                 return Err(err);
@@ -317,57 +246,92 @@ async fn main() -> Result<()> {
         }
     };
 
-    let outbound_template = template::Outbound::from_file(OUTBOUND_TEMPLATE_FILE_NAME)?;
-    let subnets = Subnet::from_file(IP_FILE_NAME)?;
-    let sing_box_template = template::SingBoxConfig::from_file(SING_BOX_TEMPLATE_FILE_NAME)?;
+    let outbound_template = Outbound::load(OUTBOUND_TEMPLATE_FILE_NAME)?;
 
-    let mut rtt_result = match RttResult::from_file(RTT_RESULT_FILE_NAME) {
-        Ok(rtt_result) => {
-            info!("Load rtt result {} success", rtt_result.res.len());
-            rtt_result
-        }
-        Err(err) => {
-            if let Some(io::Error { .. }) = err.downcast_ref() {
-                info!("Can not load rtt result. Create new rtt result.");
-                RttResult::new()
-            } else {
-                info!("Can not load rtt result: {err:?}");
-                return Err(err);
-            }
-        }
+    let subnets: Vec<Subnet> = Vec::load(args.ip_file.clone())?;
+    let subnets = if args.subnet_count != 0 {
+        &subnets[..args.subnet_count]
+    } else {
+        &subnets
     };
 
-    let mut rtt_result_cache = match RttResultCache::from_file(RTT_RESULT_CACHE_FILE_NAME) {
-        Ok(rtt_result_cache) => {
-            let subnet_count = if let Some(subnet) = subnets.get(rtt_result_cache.current_subnet) {
-                subnet.count
-            } else {
-                return Err(anyhow!("Can not load rtt result cache. current_subnet: {}, but subnets.len(): {}", rtt_result_cache.current_subnet, subnets.len()));
-            };
+    let max_subnet_count = subnets.iter().fold(0_usize, |max_subnet_count, subnet| {
+        max_subnet_count.max(subnet.len())
+    });
+    info!(
+        "Load {} subnets from {:?} success. max_subnet_count: {}",
+        subnets.len(),
+        args.ip_file,
+        max_subnet_count
+    );
 
-            if rtt_result_cache.current_subnet_start < subnet_count {
+    let sing_box_template = SingBoxConfig::load(SING_BOX_TEMPLATE_FILE_NAME)?;
+
+    let mut rtt_results;
+    let mut rtt_result_cache;
+    let rtt_result_file_name = args.output_prefix.clone() + RTT_RESULT_FILE_NAME;
+    let rtt_result_cache_file_name = args.output_prefix.clone() + RTT_RESULT_CACHE_FILE_NAME;
+
+    if args.no_cache {
+        info!("no_cache = true, use default rtt result cache and default rtt result");
+        rtt_results = RttResults::default();
+        rtt_result_cache = RttResultCache::default()
+    } else {
+        rtt_results = match RttResults::load(&rtt_result_file_name) {
+            Ok(rtt_results) => {
+                info!(
+                    "Load {} rtt results from {rtt_result_file_name} success",
+                    rtt_results.len()
+                );
+                rtt_results
+            }
+            Err(err) => {
+                if let ErrorKind::Fs { .. } = *err.0 {
+                    info!("Can not load rtt result. Create new rtt result.");
+                    RttResults::default()
+                } else {
+                    info!("Can not load rtt result: {err:?}");
+                    return Err(err);
+                }
+            }
+        };
+
+        rtt_result_cache = match RttResultCache::load(&rtt_result_cache_file_name) {
+            Ok(rtt_result_cache) => {
+                if rtt_result_cache.current_subnet >= subnets.len() {
+                    Err(DeserializedError::custom(format!( "Can not load rtt result cache. current_subnet: {}, but subnets.len(): {}", rtt_result_cache.current_subnet, subnets.len()).as_str()))?;
+                }
+
+                if rtt_result_cache.current_subnet_start >= max_subnet_count {
+                    Err(DeserializedError::custom(format!( "Can not load rtt result cache. current_subnet_start: {}, but max_subnet_count: {}", rtt_result_cache.current_subnet_start, max_subnet_count).as_str()))?;
+                }
                 info!("Load rtt result cache success: {rtt_result_cache:?}");
                 rtt_result_cache
-            } else {
-                return Err(anyhow!("Can not load rtt result cache. current_subnet_start: {}, but subnet.count: {subnet_count}", rtt_result_cache.current_subnet_start));
             }
-        }
 
-        Err(err) => {
-            if let Some(io::Error { .. }) = err.downcast_ref() {
-                info!("Can not load rtt result cache. Create new rtt result cache.");
-                RttResultCache::default()
-            } else {
-                info!("Can not load rtt result cache: {err:?}");
-                return Err(err);
+            Err(err) => {
+                if let ErrorKind::Fs { .. } = *err.0 {
+                    info!("Can not load rtt result cache. Create new rtt result cache.");
+                    RttResultCache::default()
+                } else {
+                    info!("Can not load rtt result cache: {err:?}");
+                    return Err(err);
+                }
             }
         }
-    };
-    let all_ip_count = subnets.iter()
-        .fold(0, |acc, subnet| acc + subnet.count);
-    let start_ip_count = subnets[..rtt_result_cache.current_subnet].iter()
-        .fold(0, |acc, subnet| acc + subnet.count)
-        + rtt_result_cache.current_subnet_start;
+    }
+    rtt_result_cache.save(&rtt_result_file_name)?;
+    rtt_results.save(&rtt_result_cache_file_name)?;
+
+    let all_ip_count = subnets.iter().fold(0, |acc, subnet| acc + subnet.len());
+    let start_ip_count = subnets.iter().fold(0, |acc, subnet| {
+        let subnet_len = subnet.len();
+        if rtt_result_cache.current_subnet_start >= subnet_len {
+            acc + subnet_len
+        } else {
+            acc + rtt_result_cache.current_subnet_start
+        }
+    });
 
     let progress_bar = ProgressBar::new(all_ip_count as u64);
     progress_bar.set_style(
@@ -380,63 +344,54 @@ async fn main() -> Result<()> {
     progress_bar.set_position(start_ip_count as u64);
     progress_bar.reset_eta();
 
-    while rtt_result_cache.current_subnet != subnets.len() {
-        fs::write(RTT_RESULT_CACHE_FILE_NAME, toml::to_string(&rtt_result_cache)?).context(format!("unable to save rtt result cache to {RTT_RESULT_CACHE_FILE_NAME:?}"))?;
-
-
-        let mut ips: Vec<String> = Vec::new();
-        while rtt_result_cache.current_subnet < subnets.len() && ips.len() < config.max_connection_count {
-            let subnet = &subnets[rtt_result_cache.current_subnet];
-            let tmp_ips = subnet.get_ip_list(rtt_result_cache.current_subnet_start, config.max_connection_count - ips.len());
-            rtt_result_cache.current_subnet_start += tmp_ips.len();
-            if rtt_result_cache.current_subnet_start == subnet.count {
-                rtt_result_cache.current_subnet_start = 0;
-                rtt_result_cache.current_subnet += 1;
+    while rtt_result_cache.current_subnet_start < max_subnet_count {
+        let mut ips: Vec<IpAddr> = Vec::new();
+        while ips.len() < config.max_connection_count {
+            if let Some(ip_addr) = subnets[rtt_result_cache.current_subnet]
+                .get_ip(rtt_result_cache.current_subnet_start)
+            {
+                ips.push(ip_addr);
             }
-            ips.extend_from_slice(&tmp_ips);
-        }
 
-        let sing_box_config = sing_box_template.generate(&outbound_template, &ips, config.listen_ip.clone(), config.port_base);
-        fs::write(SING_BOX_CONFIG_FILE_NAME, serde_json::to_string_pretty(&sing_box_config)?)?;
-
-        let sing_box = SingBox::new(SING_BOX_CONFIG_FILE_NAME).await?;
-
-        let mut tasks = Vec::new();
-
-        for i in 0..ips.len() {
-            let config = config.clone();
-            // TODO 重写
-            tasks.push(tokio::task::spawn(async move {
-                let config = config;
-                let i = i.clone();
-                let res = test_rtt(&config, i).await;
-                res
-            }));
-        }
-
-
-        let mut count = 0;
-        for (i, task) in tasks.iter_mut().enumerate() {
-            let res = task.await?;
-            if res.is_ok() {
-                let rtt = res.unwrap();
-                let log_str = format!("ip:{},rtt:{}", ips[i], rtt);
-                progress_bar.println(log_str.as_str());
-                debug!("{log_str}");
-                rtt_result.add_result(ips[i].clone(), rtt);
-                count += 1;
+            rtt_result_cache.current_subnet += 1;
+            if rtt_result_cache.current_subnet == subnets.len() {
+                rtt_result_cache.current_subnet = 0;
+                rtt_result_cache.current_subnet_start += 1;
+                if rtt_result_cache.current_subnet_start == max_subnet_count {
+                    break;
+                }
             }
         }
-        progress_bar.inc(tasks.len() as u64);
-        if count != 0 {
-            rtt_result.dump_to_file(RTT_RESULT_FILE_NAME)?;
+
+        let test_res = test_rtts(
+            &config,
+            &sing_box_template,
+            &outbound_template,
+            args.ignore_body_warning,
+            &progress_bar,
+            &ips,
+        )
+        .await?;
+        let mut success_count = 0;
+        for (i, ip) in ips.iter().enumerate() {
+            if let Some(rtt) = &test_res[i] {
+                success_count += 1;
+                rtt_results.add_result(*ip, rtt.clone());
+            }
         }
-        let log_str = format!("Test success count: {count}/{} {}->{} ", ips.len(), ips[0], ips[ips.len() - 1]);
+
+        if success_count != 0 {
+            rtt_results.commit();
+            rtt_results.save(&rtt_result_file_name)?;
+        }
+
+        let log_str = format!("Test success count: {success_count}/{}", ips.len());
+        progress_bar.inc(ips.len() as u64);
         progress_bar.println(log_str.as_str());
         debug!("{log_str}");
-
-        drop(sing_box);
+        rtt_result_cache.save(&rtt_result_cache_file_name)?
     }
+
     progress_bar.finish_with_message("finish!");
     Ok(())
 }
