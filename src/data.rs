@@ -1,10 +1,11 @@
+use std::collections::HashSet;
 use std::fs;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::Path;
 use std::str::FromStr;
 
-use cidr::{IpCidr, IpInet, Ipv4Inet, Ipv6Inet};
 use cidr::errors::NetworkParseError;
+use cidr::{IpCidr, IpInet, Ipv4Inet, Ipv6Inet};
 use lazy_static::lazy_static;
 use log::warn;
 use regex::Regex;
@@ -31,7 +32,7 @@ pub trait Savable {
 }
 
 // TODO add ipv6 support
-impl Loadable<Self> for Vec<Subnet> {
+impl Loadable<Self> for HashSet<Subnet> {
     fn from_str(s: &str) -> error::Result<Self> {
         lazy_static! {
             static ref RE_V4_SUBNET_MATCH: Regex =
@@ -39,11 +40,13 @@ impl Loadable<Self> for Vec<Subnet> {
             static ref RE_V4_MATCH: Regex =
                 Regex::new(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})").unwrap();
         }
-        let mut ret = Vec::new();
+        let mut ret = HashSet::new();
 
         for cap in RE_V4_SUBNET_MATCH.captures_iter(s) {
             match Subnet::from_str(&cap[0]) {
-                Ok(subnet) => ret.push(subnet),
+                Ok(subnet) => {
+                    ret.insert(subnet);
+                }
                 Err(err) => {
                     warn!("parse {:?} to subnet failed: {err:?} , skip.", &cap[0]);
                 }
@@ -65,7 +68,7 @@ impl Loadable<Self> for Vec<Subnet> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct Subnet {
     pub cidr: IpCidr,
     pub enable: bool,
@@ -74,8 +77,9 @@ pub struct Subnet {
 impl FromStr for Subnet {
     type Err = NetworkParseError;
     fn from_str(s: &str) -> Result<Self, NetworkParseError> {
-        IpCidr::from_str(s).map(|cidr| Self {
-            cidr,
+        let ip_inet = IpInet::from_str(s)?;
+        Ok(Self {
+            cidr: IpCidr::new(ip_inet.first_address(), ip_inet.network_length())?,
             enable: false,
         })
     }

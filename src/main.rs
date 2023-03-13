@@ -1,6 +1,7 @@
 #![feature(error_generic_member_access)]
 #![feature(provide_any)]
 
+use std::collections::HashSet;
 use std::error::Error;
 use std::net::{IpAddr, SocketAddr};
 use std::process::Stdio;
@@ -273,13 +274,16 @@ async fn main() -> Result<()> {
         }
     };
 
-    let mut subnets: Vec<Subnet> = match Vec::load(&args.ip_file) {
+    let mut subnets: Vec<Subnet> = match HashSet::load(&args.ip_file) {
         Ok(subnets) => subnets,
         Err(err) => {
             info!("Unable to load subnets from {}\n{err}", &args.ip_file);
             return Err(err);
         }
-    };
+    }
+    .iter()
+    .map(Subnet::clone)
+    .collect();
 
     let subnets = if args.subnet_count != 0 {
         &mut subnets[..args.subnet_count]
