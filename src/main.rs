@@ -7,6 +7,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use cidr::IpInet;
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{debug, error, info, warn, LevelFilter};
@@ -40,14 +41,14 @@ async fn do_test_rtt(
     expected_body: String,
 ) -> core::result::Result<u64, ReqwestError> {
     let start = SystemTime::now();
-    let body = client
+
+    let res = client
         .get(url)
         .send()
         .await
-        .map_err(ReqwestError::network)?
-        .text()
-        .await
         .map_err(ReqwestError::network)?;
+
+    let body = res.text().await.map_err(ReqwestError::network)?;
     if !body.contains(expected_body.as_str()) {
         Err(ReqwestError::body_no_match(body, expected_body))?
     }
@@ -69,9 +70,17 @@ async fn test_rtt(config: Arc<Config>, cdn_ip: IpAddr, idx: usize) -> Result<Rtt
         .map_err(ReqwestError::build)?;
 
     let server_url = Url::parse(config.server_url.as_str()).map_err(DeserializedError::from)?;
-    let cdn_url = Url::parse(config.cdn_url.as_str()).map_err(DeserializedError::from)?;
+    let cdn_ip_string = cdn_ip.to_string();
+
+    let cdn_url = if config.cdn_url.is_empty() {
+        Url::parse(format!("http://{}", cdn_ip_string).as_str()).map_err(DeserializedError::from)?
+    } else {
+        Url::parse(config.cdn_url.as_str()).map_err(DeserializedError::from)?
+    };
     let cdn_domain = if let Some(cdn_domain) = cdn_url.domain() {
         cdn_domain
+    } else if config.cdn_url.is_empty() {
+        cdn_ip_string.as_str()
     } else {
         Err(DeserializedError::custom("Url must have domain, not IP"))?
     };
@@ -101,7 +110,7 @@ async fn test_rtt(config: Arc<Config>, cdn_ip: IpAddr, idx: usize) -> Result<Rtt
     let cdn_rtt_result = cdn_rtt_task.await.map_err(TokioError::from)?;
     let server_rtt_result = server_rtt_task.await.map_err(TokioError::from)?;
 
-    Ok(RttResult::new(cdn_rtt_result?, server_rtt_result?))
+    Ok(RttResult::new(server_rtt_result?, cdn_rtt_result?))
 }
 
 struct SingBox {
@@ -162,11 +171,13 @@ async fn test_rtts(
     data_dir: &str,
     ignore_body_warning: bool,
     progress_bar: &ProgressBar,
-    ips: &[IpAddr],
+    ips: &[IpInet],
 ) -> Result<Vec<Option<RttResult>>> {
     let sing_box_config = sing_box_template.generate(
         outbound_template,
-        &ips.iter().map(IpAddr::to_string).collect::<Vec<String>>(),
+        &ips.iter()
+            .map(|ip_inet| ip_inet.address().to_string())
+            .collect::<Vec<String>>(),
         config.listen_ip.clone(),
         config.port_base,
     );
@@ -180,7 +191,7 @@ async fn test_rtts(
     let mut ret = Vec::new();
     for (i, &cdn_ip) in ips.iter().enumerate() {
         let config = config.clone();
-        tasks.push(tokio::task::spawn(test_rtt(config, cdn_ip, i)));
+        tasks.push(tokio::task::spawn(test_rtt(config, cdn_ip.address(), i)));
     }
 
     for (i, task) in tasks.iter_mut().enumerate() {
@@ -225,6 +236,10 @@ struct Args {
     no_cache: bool,
     #[arg(long, default_value = "data")]
     data_dir: String,
+    #[arg(long)]
+    auto_skip: bool,
+    #[arg(long, default_value_t = 10)]
+    enable_threshold: usize,
 }
 
 #[tokio::main]
@@ -252,7 +267,7 @@ async fn main() -> Result<()> {
         }
     };
 
-    let subnets: Vec<Subnet> = match Vec::load(&args.ip_file) {
+    let mut subnets: Vec<Subnet> = match Vec::load(&args.ip_file) {
         Ok(subnets) => subnets,
         Err(err) => {
             info!("Unable to load subnets from {}\n{err}", &args.ip_file);
@@ -261,9 +276,9 @@ async fn main() -> Result<()> {
     };
 
     let subnets = if args.subnet_count != 0 {
-        &subnets[..args.subnet_count]
+        &mut subnets[..args.subnet_count]
     } else {
-        &subnets
+        &mut subnets
     };
 
     let max_subnet_len = subnets
@@ -348,9 +363,25 @@ async fn main() -> Result<()> {
     rtt_results.save(&rtt_result_file_name)?;
     rtt_result_cache.save(&rtt_result_cache_file_name)?;
 
-    let all_ip_count = subnets.iter().fold(0, |acc, subnet| acc + subnet.len());
-    let start_ip_count = subnets.iter().fold(0, |acc, subnet| {
-        let subnet_len = subnet.len();
+    rtt_results.enable_subnets(subnets);
+
+    fn calc_subnet_len(subnet: &Subnet, rtt_result_cache: &RttResultCache, args: &Args) -> usize {
+        if !args.auto_skip
+            || rtt_result_cache.current_subnet_start < args.enable_threshold
+            || subnet.enable
+        {
+            subnet.len()
+        } else {
+            0
+        }
+    }
+
+    let mut all_ip_count = subnets.iter().fold(0, |acc, subnet| {
+        acc + calc_subnet_len(subnet, &rtt_result_cache, &args)
+    });
+
+    let mut start_ip_count = subnets.iter().fold(0, |acc, subnet| {
+        let subnet_len = calc_subnet_len(subnet, &rtt_result_cache, &args);
         if rtt_result_cache.current_subnet_start >= subnet_len {
             acc + subnet_len
         } else {
@@ -370,12 +401,18 @@ async fn main() -> Result<()> {
     progress_bar.reset_eta();
 
     while rtt_result_cache.current_subnet_start < max_subnet_len {
-        let mut ips: Vec<IpAddr> = Vec::new();
+        let mut ips: Vec<IpInet> = Vec::new();
+        let mut subnet_idxs: Vec<usize> = Vec::new();
         while ips.len() < config.max_connection_count {
-            if let Some(ip_addr) = subnets[rtt_result_cache.current_subnet]
-                .get_ip(rtt_result_cache.current_subnet_start)
+            let subnet = &subnets[rtt_result_cache.current_subnet];
+            if !args.auto_skip
+                || rtt_result_cache.current_subnet_start < args.enable_threshold
+                || subnet.enable
             {
-                ips.push(ip_addr);
+                if let Some(ip_inet) = subnet.get_ip(rtt_result_cache.current_subnet_start) {
+                    ips.push(ip_inet);
+                    subnet_idxs.push(rtt_result_cache.current_subnet);
+                }
             }
 
             rtt_result_cache.current_subnet += 1;
@@ -384,6 +421,29 @@ async fn main() -> Result<()> {
                 rtt_result_cache.current_subnet_start += 1;
                 if rtt_result_cache.current_subnet_start == max_subnet_len {
                     break;
+                }
+
+                if args.auto_skip
+                    && rtt_result_cache.current_subnet_start == Subnet::ENABLE_THRESHOLD
+                {
+                    all_ip_count = subnets.iter().fold(0, |acc, subnet| {
+                        acc + calc_subnet_len(subnet, &rtt_result_cache, &args)
+                    });
+                    start_ip_count = subnets.iter().fold(0, |acc, subnet| {
+                        let subnet_len = calc_subnet_len(subnet, &rtt_result_cache, &args);
+                        if subnet_len == 0 {
+                            return acc;
+                        }
+                        if rtt_result_cache.current_subnet_start >= subnet_len {
+                            acc + subnet_len
+                        } else {
+                            acc + rtt_result_cache.current_subnet_start
+                        }
+                    }) - ips.len();
+                    progress_bar.println(format!("update: {start_ip_count}/{all_ip_count}"));
+                    progress_bar.set_length(all_ip_count as u64);
+                    progress_bar.set_position(start_ip_count as u64);
+                    progress_bar.reset_eta();
                 }
             }
         }
@@ -403,6 +463,9 @@ async fn main() -> Result<()> {
             if let Some(rtt) = &test_res[i] {
                 success_count += 1;
                 rtt_results.add_result(*ip, rtt.clone());
+                if rtt_result_cache.current_subnet_start < Subnet::ENABLE_THRESHOLD {
+                    subnets[subnet_idxs[i]].enable = true;
+                }
             }
         }
 
@@ -411,7 +474,14 @@ async fn main() -> Result<()> {
             rtt_results.save(&rtt_result_file_name)?;
         }
 
-        let log_str = format!("Test success count: {success_count}/{}", ips.len());
+        let log_str = format!(
+            "Test success count: {success_count}/{} subnet: {}/{} current_subnet_start: {}/{}",
+            ips.len(),
+            rtt_result_cache.current_subnet,
+            subnets.len(),
+            rtt_result_cache.current_subnet_start,
+            max_subnet_len
+        );
         progress_bar.inc(ips.len() as u64);
         progress_bar.println(log_str.as_str());
         debug!("{log_str}");

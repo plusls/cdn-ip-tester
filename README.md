@@ -63,6 +63,9 @@ cdn-ip-tester 测试的是 **本机->cf->服务器** 的延迟
 + `--subnet-count` 测试前 `subnet_count` 个子网，默认为 0，表示测试所有子网
 + `--no-cache` 忽略 cache 开始新的测试
 + `--data-dir` 默认为 `data`
++ `--auto-skip` 自动跳过看起来不会有结果的 ip 段，判断标准：当 `current_subnet_start` 大于等于 `enable_threshold` 时，若是该
+  ip 段一个合法的结果都没有，则直接跳过该 ip 段
++ `--enable-threshold` 结合 `auto-skip` 使用, 默认为 5
 
 ## 模板文件
 
@@ -90,11 +93,11 @@ cdn-ip-tester 的配置文件
 port_base = 31000 # 本机监听的最小端口值
 max_connection_count = 50 # 同时测试的最大连接数
 server_url = "http://127.0.0.1/" # 远程 url
-cdn_url = "http://archlinux.cloudflaremirrors.com" # cdn url
+cdn_url = "" # cdn url, 为空表示直接访问 cdn 的 ip
 listen_ip = "127.0.0.2" # 绑定的本机 ip
 max_rtt = 800 # 最大延迟，超时后的结果会被自动丢弃
-server_res_body = "archlinux" # {server_url} 的返回结果需要包含 {server_res_body}, 为空则表示忽略返回结果检查
-cdn_res_body = "" # {server_url} 的返回结果需要包含 {cdn_res_body}，为空则表示忽略返回结果检查
+server_res_body = "" # {server_url} 的返回结果需要包含 {server_res_body}, 为空则表示忽略返回结果检查
+cdn_res_body = "error code: 1003" # {server_url} 的返回结果需要包含 {cdn_res_body}，为空则表示忽略返回结果检查
 max_subnet_len = 256 # 子网内最多选取多少个 ip
 ```
 
@@ -127,7 +130,7 @@ cloudflare 的 ipv6 网段
 ## 测试顺序
 
 按子网顺序依次测试，每个子网轮流测试一个，然后循环到第一个子网，每个子网最多选取 {max_subnet_len} 个 IP，若是子网的 IP 数大于
-{max_subnet_len}，则随机选取
+{max_subnet_len}，则随机选取（**WIP**）
 {max_subnet_len} 个 IP
 
 ## 使用方式

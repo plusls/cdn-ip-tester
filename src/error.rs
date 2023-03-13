@@ -25,6 +25,7 @@ pub enum DeserializedError {
     },
     ParseInt(#[from] std::num::ParseIntError),
     AddrParse(#[from] std::net::AddrParseError),
+    NetworkParse(#[from] cidr::errors::NetworkParseError),
     ParseUrl(#[from] url::ParseError),
     #[error("{0}")]
     Custom(String),

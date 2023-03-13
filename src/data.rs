@@ -1,10 +1,10 @@
 use std::fs;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::Path;
 use std::str::FromStr;
 
 use cidr::errors::NetworkParseError;
-use cidr::IpCidr;
+use cidr::{IpCidr, IpInet, Ipv4Inet, Ipv6Inet};
 use lazy_static::lazy_static;
 use log::warn;
 use regex::Regex;
@@ -66,30 +66,49 @@ impl Loadable<Self> for Vec<Subnet> {
 }
 
 #[derive(Debug)]
-pub struct Subnet(IpCidr);
+pub struct Subnet {
+    pub cidr: IpCidr,
+    pub enable: bool,
+}
 
 impl FromStr for Subnet {
     type Err = NetworkParseError;
     fn from_str(s: &str) -> Result<Self, NetworkParseError> {
-        IpCidr::from_str(s).map(Self)
+        IpCidr::from_str(s).map(|cidr| Self {
+            cidr,
+            enable: false,
+        })
     }
 }
 
 impl Subnet {
+    pub const ENABLE_THRESHOLD: usize = 10;
     pub fn len(&self) -> usize {
-        1 << (self.0.family().len() - self.0.network_length())
+        1 << (self.cidr.family().len() - self.cidr.network_length())
     }
 
-    pub fn get_ip(&self, idx: usize) -> Option<IpAddr> {
-        match self.0 {
+    pub fn get_ip(&self, idx: usize) -> Option<IpInet> {
+        match self.cidr {
             IpCidr::V4(cidr_v4) => {
                 let ipv4 = u32::from(cidr_v4.first_address()) + idx as u32;
-                Some(Ipv4Addr::from(ipv4).into())
+                Some(
+                    Ipv4Inet::new(Ipv4Addr::from(ipv4), cidr_v4.network_length())
+                        .unwrap()
+                        .into(),
+                )
             }
             IpCidr::V6(cidr_v6) => {
                 let ipv6 = u128::from(cidr_v6.first_address()) + idx as u128;
-                Some(Ipv6Addr::from(ipv6).into())
+                Some(
+                    Ipv6Inet::new(Ipv6Addr::from(ipv6), cidr_v6.network_length())
+                        .unwrap()
+                        .into(),
+                )
             }
         }
     }
+
+    // pub fn should_enable(&self, idx: usize, auto_skip: bool) -> bool {
+    //     !auto_skip || idx < Self::ENABLE_THRESHOLD || self.enable
+    // }
 }
