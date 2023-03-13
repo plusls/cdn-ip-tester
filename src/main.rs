@@ -380,14 +380,25 @@ async fn main() -> Result<()> {
         acc + calc_subnet_len(subnet, &rtt_result_cache, &args)
     });
 
-    let mut start_ip_count = subnets.iter().fold(0, |acc, subnet| {
-        let subnet_len = calc_subnet_len(subnet, &rtt_result_cache, &args);
-        if rtt_result_cache.current_subnet_start >= subnet_len {
-            acc + subnet_len
-        } else {
-            acc + rtt_result_cache.current_subnet_start
-        }
-    }) + rtt_result_cache.current_subnet;
+    fn calc_start_ip_count(
+        subnets: &[Subnet],
+        rtt_result_cache: &RttResultCache,
+        args: &Args,
+    ) -> usize {
+        subnets.iter().enumerate().fold(0, |acc, (i, subnet)| {
+            let subnet_len = calc_subnet_len(subnet, &rtt_result_cache, &args);
+            acc + subnet_len.min(rtt_result_cache.current_subnet_start)
+                + if i < rtt_result_cache.current_subnet && subnet_len != 0 {
+                    1
+                } else {
+                    0
+                }
+        })
+    }
+
+    let mut start_ip_count = calc_start_ip_count(subnets, &rtt_result_cache, &args);
+
+    info!("current progress: {start_ip_count}/{all_ip_count}");
 
     let progress_bar = ProgressBar::new(all_ip_count as u64);
     progress_bar.set_style(
@@ -419,9 +430,6 @@ async fn main() -> Result<()> {
             if rtt_result_cache.current_subnet == subnets.len() {
                 rtt_result_cache.current_subnet = 0;
                 rtt_result_cache.current_subnet_start += 1;
-                if rtt_result_cache.current_subnet_start == max_subnet_len {
-                    break;
-                }
 
                 if args.auto_skip
                     && rtt_result_cache.current_subnet_start == Subnet::ENABLE_THRESHOLD
@@ -429,21 +437,18 @@ async fn main() -> Result<()> {
                     all_ip_count = subnets.iter().fold(0, |acc, subnet| {
                         acc + calc_subnet_len(subnet, &rtt_result_cache, &args)
                     });
-                    start_ip_count = subnets.iter().fold(0, |acc, subnet| {
-                        let subnet_len = calc_subnet_len(subnet, &rtt_result_cache, &args);
-                        if subnet_len == 0 {
-                            return acc;
-                        }
-                        if rtt_result_cache.current_subnet_start >= subnet_len {
-                            acc + subnet_len
-                        } else {
-                            acc + rtt_result_cache.current_subnet_start
-                        }
-                    }) - ips.len();
+
+                    start_ip_count =
+                        calc_start_ip_count(subnets, &rtt_result_cache, &args) - ips.len();
+
                     progress_bar.println(format!("update: {start_ip_count}/{all_ip_count}"));
                     progress_bar.set_length(all_ip_count as u64);
                     progress_bar.set_position(start_ip_count as u64);
                     progress_bar.reset_eta();
+                }
+
+                if rtt_result_cache.current_subnet_start == max_subnet_len {
+                    break;
                 }
             }
         }

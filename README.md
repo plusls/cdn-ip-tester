@@ -141,9 +141,9 @@ cloudflare 的 ipv6 网段
    data）：`outbound-template.json`，`sing-box-template.json`，`ip-tester.toml`
 4. 根据 `outbound-template.json` 编写自己的 `outbound-template.json`
 5. 修改 `ip-tester.toml` 以适配自己的服务器
-6. 运行 cdn-ip-tester
+6. ./cdn-ip-tester --ip-file cf-v4.txt --auto-skip
 
-注：上文的获取 sing-box 和获取数据（第 3，4 步）在 linux 下可以通过执行 bash 指令完成：
+注：上文的获取 sing-box 和获取数据（第 3，4 步）在 amd64 linux 下可以通过执行 bash 指令完成：
 
 ```bash
 sh -c "$(curl -fsSL https://raw.githubusercontent.com/plusls/cdn-ip-tester/master/get-data.sh)"
