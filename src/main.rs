@@ -356,7 +356,7 @@ async fn main() -> Result<()> {
         } else {
             acc + rtt_result_cache.current_subnet_start
         }
-    });
+    }) + rtt_result_cache.current_subnet;
 
     let progress_bar = ProgressBar::new(all_ip_count as u64);
     progress_bar.set_style(
