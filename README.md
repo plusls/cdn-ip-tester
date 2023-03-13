@@ -76,7 +76,7 @@ sing-box 的模板，cdn-ip-tester 会自动以该文件为模板，向 `inbound
 ### outbound-template.json
 
 sing-box outbound 的模板， cdn-ip-tester 会自动为其添加 `tag` 和 `server` 后合并进 sing-box
-template，`outbound-template-template.json` 为 trojan+ws+0rtt 的配置样例
+template，`outbound-template.json` 为 trojan+ws+0rtt 的配置样例
 
 ## 配置文件
 
@@ -111,6 +111,10 @@ max_subnet_len = 256 # 子网内最多选取多少个 ip
 其中存储了延迟测试的进度，如果该文件存在每次运行时都会自动加载其中的数据
 
 ## 元数据
+
+### get-cf-ip.py
+
+从 https://bgp.he.net/ 自动获取属于 cf 的网段，并写入 `cf-v4.txt`, `cf-v6.txt`
 
 ### cf-v4.txt
 
