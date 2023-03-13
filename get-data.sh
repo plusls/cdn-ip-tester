@@ -6,9 +6,9 @@ mv sing-box-1.2-beta8-linux-amd64v3/sing-box .
 rm -r sing-box-1.2-beta8-linux-amd64v3 sing-box.tar.gz
 mkdir data
 echo "download cf-v4.txt"
-curl -Lo "data/cf-v4.txt" https://raw.githubusercontent.com/plusls/cdn-ip-tester/master/cf-v4.txt
+curl -Lo "cf-v4.txt" https://raw.githubusercontent.com/plusls/cdn-ip-tester/master/cf-v4.txt
 echo "download cf-v6.txt"
-curl -Lo "data/cf-v6.txt" https://raw.githubusercontent.com/plusls/cdn-ip-tester/master/cf-v6.txt
+curl -Lo "cf-v6.txt" https://raw.githubusercontent.com/plusls/cdn-ip-tester/master/cf-v6.txt
 echo "download outbound-template.json"
 curl -Lo "data/outbound-template.json" https://raw.githubusercontent.com/plusls/cdn-ip-tester/master/outbound-template.json
 echo "download sing-box-template.json"
