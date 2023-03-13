@@ -120,8 +120,6 @@ class BgpInfo:
 
 
 def main():
-
-
     bgp_info = BgpInfo()
     bgp_info.search("cloudflare")
     as_list: List[AutonomousSystem] = [bgp_info.autonomous_system(result.result) for result in
@@ -137,6 +135,7 @@ def main():
                 assert net.result_type is QueryResult.ResultType.NET
                 cf_v6.write(f'{net.result}\n')
     print('update cf ip success!')
+
 
 # res = requests.get("https://bgp.he.net/search", params=params, headers=headers)
 #     print(res.text)
