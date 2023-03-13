@@ -132,7 +132,7 @@ cloudflare 的 ipv6 网段
 2. 下载对应的 sing-box 可执行文件
 3. 获取对应的元数据，模板，配置文件，并放入对应的数据目录（默认为
    data）：`outbound-template.json`，`sing-box-template.json`，`ip-tester.toml`
-4. 根据 `outbound-template-template.json` 编写自己的 `outbound-template.json`
+4. 根据 `outbound-template.json` 编写自己的 `outbound-template.json`
 5. 修改 `ip-tester.toml` 以适配自己的服务器
 6. 运行 cdn-ip-tester
 
