@@ -185,7 +185,13 @@ async fn test_rtts(
     let sing_box_config_path = format!("{data_dir}/{SING_BOX_CONFIG_FILE_NAME}");
     sing_box_config.save(&sing_box_config_path)?;
 
-    let sing_box = SingBox::new(&sing_box_config_path).await?;
+    let sing_box = match SingBox::new(&sing_box_config_path).await {
+        Ok(sing_box) => sing_box,
+        Err(err) => {
+            error!("Can not start sing box process: {err}");
+            Err(err)?
+        }
+    };
 
     let mut tasks = Vec::new();
     let mut ret = Vec::new();
