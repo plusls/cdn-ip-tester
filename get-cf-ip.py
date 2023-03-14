@@ -43,6 +43,8 @@ class BgpInfo:
 
         self.session.get(f"{self.URL}/search")
         path_cookie: Optional[str] = self.session.cookies.get('path', domain=self.DOMAIN)
+        if path_cookie is None:
+            raise Exception(f"path_cookie is None, cookies: {self.session.cookies}")
         path_cookie = unquote(path_cookie)
         ip_res: Response = self.session.get(f"{self.URL}/i")
         ip: str = ip_res.text.strip()
@@ -52,11 +54,12 @@ class BgpInfo:
         r = self.session.post(f"{self.URL}/jc", data={'p': p, 'i': i})
 
         if r.status_code != 200:
-            raise Exception(f"init error! p: {p}, i: {i}, r: {r} {r.content}, ip: {ip}, path_cookie: {path_cookie}")
+            raise Exception(f"init error! p: {p}, i: {i}, r: {r} {r.content!r}, ip: {ip}, path_cookie: {path_cookie}")
 
     @staticmethod
     def _parse_result_table(table: Tag) -> List[QueryResult]:
         ret = []
+        assert (type(table.tbody) is Tag)
         lines: List[Tag] = [line for line in table.tbody.children if type(line) is Tag]
         for line in lines:
             tds = line.find_all("td")
