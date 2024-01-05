@@ -1,5 +1,4 @@
 #![feature(error_generic_member_access)]
-#![feature(provide_any)]
 
 use std::collections::HashSet;
 use std::error::Error;
@@ -42,7 +41,6 @@ async fn do_test_rtt(
     expected_body: String,
 ) -> core::result::Result<u64, ReqwestError> {
     let start = SystemTime::now();
-
     let res = client
         .get(url)
         .send()
@@ -128,7 +126,7 @@ impl SingBox {
             .map_err(ErrorKind::process)?;
         let mut tmp_buf = [0_u8];
         if let Err(read_stdout_err) = child
-            .stdout
+            .stderr
             .as_mut()
             .unwrap()
             .read_exact(&mut tmp_buf)
@@ -453,9 +451,17 @@ async fn main() -> Result<()> {
                         acc + calc_subnet_len(subnet, &rtt_result_cache, &args, max_subnet_len)
                     });
 
+
+                    // TODO:  可能会溢出，有空看看
+                    // start_ip_count =
+                    //     calc_start_ip_count(subnets, &rtt_result_cache, &args, max_subnet_len)
+                    //         - ips.len();
                     start_ip_count =
-                        calc_start_ip_count(subnets, &rtt_result_cache, &args, max_subnet_len)
-                            - ips.len();
+                        if calc_start_ip_count(subnets, &rtt_result_cache, &args, max_subnet_len) >  ips.len() {
+                            calc_start_ip_count(subnets, &rtt_result_cache, &args, max_subnet_len) - ips.len()
+                } else {
+                            0
+                        };
 
                     progress_bar.println(format!("update: {start_ip_count}/{all_ip_count}"));
                     progress_bar.set_length(all_ip_count as u64);

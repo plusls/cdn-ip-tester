@@ -1,5 +1,3 @@
-#![feature(error_generic_member_access)]
-#![feature(provide_any)]
 
 use proc_macro::TokenStream;
 
